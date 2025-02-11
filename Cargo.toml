@@ -1,0 +1,20 @@
+[package]
+name = "contraction_hierarchies"
+version = "0.1.0"
+edition = "2021"
+
+
+[dependencies]
+ndarray = "0.16.1"
+ndarray-rand = "0.15.0"
+petgraph = { version = "0.7.1", features = ["all", "serde", "serde_derive"] }
+metis = "0.2.2"
+rand = "0.9.0"
+rand_distr = "0.5.0"
+rustfft = "6.2.0"
+ordered-float = "3.7.0"
+anyhow = "1.0.95"
+itertools = "0.14.0"
+tokei = "12.1.2"
+
+
