@@ -55,10 +55,10 @@ impl<N, E> HeuristicGraph<N, E> {
             xadj.push(current_idx);
         }
 
-        // Partition the graph into a, b 
+        // Partition the graph into a, b
         let mut part = vec![0; nodes.len()];
-        let metis_graph = metis::Graph::new(1, 2, &xadj, &adjncy)
-            .expect("Failed to create METIS graph");
+        let metis_graph =
+            metis::Graph::new(1, 2, &xadj, &adjncy).expect("Failed to create METIS graph");
         metis_graph
             .part_recursive(&mut part)
             .expect("Failed to partition graph");
@@ -73,6 +73,13 @@ impl<N, E> HeuristicGraph<N, E> {
                 b.push(node);
             }
         }
+
+        // TODO: The correct way
+        // Let S be the minimal vertex cover of the edges with one endpoint in each of A,B.
+        //
+        // A' = A \ S
+        // B' = B \ S
+        // (A',B',S) is our dissection
 
         // HACK: Identify separator nodes as those in A that have neighbors in B.
         let mut separator = Vec::new();
