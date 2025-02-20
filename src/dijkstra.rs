@@ -1,15 +1,11 @@
 // copied FROM petgraph::algo::dijkstra and petgraph::scored TO ADD PREDECESSOR RETURN, only change: uncommented existing predecessor code and added to the return type
 
-
-
-
 use petgraph::algo::Measure;
 use petgraph::visit::{EdgeRef, IntoEdges, VisitMap, Visitable};
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap};
 use std::collections::hash_map::Entry::{Occupied, Vacant};
+use std::collections::{BinaryHeap, HashMap};
 use std::hash::Hash;
-
 
 /// `MinScored<K, T>` holds a score `K` and a scored object `T` in
 /// a pair for use with a `BinaryHeap`.
@@ -102,7 +98,6 @@ impl<K: PartialOrd, T> Ord for MaxScored<K, T> {
         }
     }
 }
-
 
 // from petgraph::algo::dijkstra
 pub fn dijkstra<G, F, K>(

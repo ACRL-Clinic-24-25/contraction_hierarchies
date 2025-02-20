@@ -1,10 +1,13 @@
+#![feature(let_chains)]
 #![allow(dead_code, unused_variables)]
 
+use ordered_float::Float;
 pub mod dijkstra;
 pub mod nested_dissection;
 
 use anyhow::{Context, Result};
 use dijkstra::dijkstra;
+use ordered_float::OrderedFloat;
 use petgraph::{graph::NodeIndex, Graph};
 use std::hash::Hash;
 
@@ -34,6 +37,32 @@ impl<Edge> CHEdge<Edge> {
     }
 }
 
+// TODO: Analyze the ways in which OrderedFloat breaks IEEE754 to provide ordering, and validate that such breaks from the standard to not cause problems where we are using
+pub trait Distance {
+    fn probability(&self) -> OrderedFloat<f64>;
+
+    fn surprisal(&self) -> OrderedFloat<f64> {
+        -self.probability().ln()
+    }
+}
+
+impl<E: Distance> Distance for CHEdge<E> {
+    fn probability(&self) -> OrderedFloat<f64> {
+        match self {
+            CHEdge::Original { edge } => edge.probability(),
+            CHEdge::Shortcut { edges, iteration } => {
+                edges.iter().map(Distance::probability).product()
+            }
+        }
+    }
+}
+
+impl Distance for () {
+    fn probability(&self) -> OrderedFloat<f64> {
+        OrderedFloat(1.0)
+    }
+}
+
 pub trait ContractionHeuristic<N, E> {
     // Only call after the previously specified returned node (if any) has been contracted
     fn next_contraction(&mut self, graph: &Graph<CHNode<N>, CHEdge<E>>) -> Option<NodeIndex>;
@@ -48,10 +77,11 @@ where
     }
 }
 
-type Dist = usize; // TODO make generic over distance types
+type SurprisalType = ordered_float::OrderedFloat<f64>; // TODO make generic over distance types
 
+#[derive(Clone)]
 struct SearchResult {
-    distance: Dist,
+    surprisal: SurprisalType,
     path: Vec<NodeIndex>,
 }
 
@@ -68,6 +98,7 @@ struct SearchResult {
 #[derive(Clone)]
 pub struct CH<N, E, H>
 where
+    E: Distance,
     H: ContractionHeuristic<N, E>,
 {
     graph: Graph<CHNode<N>, CHEdge<E>>,
@@ -79,6 +110,8 @@ use std::fmt::Debug;
 
 impl<N: Clone + Hash + Eq + Debug, E: Clone + Hash + Debug, H> CH<N, E, H>
 where
+    N: Clone + Hash + Eq + Debug,
+    E: Clone + Hash + Debug + Distance,
     H: ContractionHeuristic<N, E>,
 {
     fn annotate_graph(graph: Graph<N, E>) -> Graph<CHNode<N>, CHEdge<E>> {
@@ -100,14 +133,16 @@ where
 
     fn g_distance(&self, x_index: NodeIndex, y_index: NodeIndex) -> Option<SearchResult> {
         let (distances, predecessors) = dijkstra(&self.graph, x_index, Some(y_index), |e| {
-            // TODO implement generic edge cost
             use petgraph::visit::EdgeRef;
             // Skip edges that connect to contracted nodes
             match (&self.graph[e.source()], &self.graph[e.target()]) {
-                (CHNode::Contracted { .. }, _) | (_, CHNode::Contracted { .. }) => std::usize::MAX,
-                _ => 1,
+                (CHNode::Contracted { .. }, _) | (_, CHNode::Contracted { .. }) => {
+                    OrderedFloat::nan()
+                }
+                _ => e.weight().surprisal(),
             }
         });
+        dbg!(&distances, &predecessors);
 
         // Reconstruct path from predecessors map
         let mut path = Vec::new();
@@ -125,15 +160,24 @@ where
 
         // Only return Some if the distance is less than MAX (meaning path doesn't use contracted nodes)
         distances.get(&y_index).and_then(|&distance| {
-            if distance == std::usize::MAX {
+            // TODO validate this use of ordered float is correct
+            if distance < OrderedFloat::infinity() {
                 None
             } else {
-                Some(SearchResult { distance, path })
+                Some(SearchResult {
+                    surprisal: distance,
+                    path,
+                })
             }
         })
     }
 
-    fn g_distance_limited(&self, x: NodeIndex, y: NodeIndex, limit: Dist) -> Option<SearchResult> {
+    fn g_distance_limited(
+        &self,
+        x: NodeIndex,
+        y: NodeIndex,
+        limit: SurprisalType,
+    ) -> Option<SearchResult> {
         // TODO actually use limit
         self.g_distance(x, y)
     }
@@ -171,7 +215,7 @@ where
                             )
                         })
                         .unwrap()
-                        .distance,
+                        .surprisal,
                 )
             })
             .sorted_by_key(|(_, _, d)| *d)
@@ -199,18 +243,22 @@ where
         }
 
         // witness search -- i.e. does removing v destroy the previously existing shortest path between x and y?
-        for (x, y, d) in in_out_pairs {
-            let search_result = self.g_distance_limited(x, y, d * 2);
+        // TODO: Shortcut should probability sum over all path lengths to preserve stochastic transition probabilities
+        //       There may be a better algorithm for "find probability of all probability-weighted paths from A->C via B"
 
-            let should_add_shortcut = match search_result {
-                Some(result) if result.distance <= d => {
+        for (x, y, d) in in_out_pairs {
+            // TODO: We probably need to search the whole graph to avoid looking at any paths
+            let search_result = self.g_distance_limited(x, y, d * 2.0);
+
+            let should_add_shortcut = match search_result.clone() {
+                Some(result) if result.surprisal <= d => {
                     println!("Found witness path from {x:?} to {y:?}: {:?} with distance {} (original distance: {})", 
-                        result.path, result.distance, d);
+                        result.path, result.surprisal, d);
                     false
                 }
                 Some(result) => {
                     println!("Path found from {x:?} to {y:?} with distance {} > {} (original) - adding shortcut", 
-                        result.distance, d);
+                        result.surprisal, d);
                     true
                 }
                 None => {
@@ -219,12 +267,33 @@ where
                 }
             };
 
-            if should_add_shortcut {
+            if let Some(search_result) = search_result
+                && should_add_shortcut
+            {
+                let edges = search_result
+                    .path
+                    .windows(2)
+                    .map(|window| {
+                        let edge_index = self
+                            .graph
+                            .find_edge(window[0], window[1])
+                            .expect("graph should contain all edges from found path");
+
+                        self.graph
+                            .edge_weight(edge_index)
+                            .expect("found edge index should correspond to an edge")
+                    })
+                    .flat_map(|ch_edge| match ch_edge {
+                        CHEdge::Original { edge } => vec![edge.clone()],
+                        CHEdge::Shortcut { edges, iteration } => edges.to_owned(),
+                    })
+                    .collect();
+
                 self.graph.add_edge(
                     x,
                     y,
                     CHEdge::Shortcut {
-                        edges: Vec::new(), // TODO: implement edge merge
+                        edges,
                         iteration: self.num_contractions,
                     },
                 );
