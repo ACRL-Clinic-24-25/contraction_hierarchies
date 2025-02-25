@@ -158,16 +158,16 @@ where
         }
         path.reverse();
 
-        // Only return Some if the distance is less than MAX (meaning path doesn't use contracted nodes)
+        // Only return Some if the distance is less than infinity (meaning a valid path was found)
         distances.get(&y_index).and_then(|&distance| {
             // TODO validate this use of ordered float is correct
             if distance < OrderedFloat::infinity() {
-                None
-            } else {
                 Some(SearchResult {
                     surprisal: distance,
                     path,
                 })
+            } else {
+                None
             }
         })
     }
